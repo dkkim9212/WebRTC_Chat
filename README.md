@@ -1,2 +1,2 @@
-# WebRTC_Chat
-웹 화상채팅 기능 구현
+# WebRTC
+WebRTC 구현 프로젝트

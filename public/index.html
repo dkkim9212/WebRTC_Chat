@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebRTC 화상 테스트</title>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      background: #f5f5f5;
+    }
+
+    h1 {
+      margin-bottom: 12px;
+    }
+
+    .room {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    input {
+      padding: 10px;
+      font-size: 16px;
+      flex: 1;
+    }
+
+    button {
+      padding: 10px 14px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    #status {
+      padding: 10px;
+      background: white;
+      margin-bottom: 16px;
+      border-radius: 6px;
+    }
+
+    .videos {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .box {
+      background: white;
+      padding: 12px;
+      border-radius: 10px;
+    }
+
+    video {
+      width: 100%;
+      height: 320px;
+      background: black;
+      object-fit: cover;
+      border-radius: 8px;
+    }
+
+    @media (max-width: 700px) {
+      .videos {
+        grid-template-columns: 1fr;
+      }
+
+      video {
+        height: 240px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <h1>WebRTC 1:1 화상채팅</h1>
+
+  <div class="room">
+    <input id="roomInput" value="room1" placeholder="방 이름" />
+    <button id="joinBtn">방 입장</button>
+  </div>
+
+  <select id="micSelect">
+    <option value="">마이크 선택</option>
+  </select>
+  <label>
+    상대방 소리
+    <input id="remoteVolume" type="range" min="0" max="1" step="0.1" value="0.5">
+  </label>
+
+  <label>
+    내 마이크 음량
+    <input id="micVolume" type="range" min="0" max="2" step="0.1" value="1">
+  </label>
+
+  <select id="speakerSelect">
+    <option value="">스피커 선택</option>
+  </select>
+
+  <button id="joinBtn">방 입장</button>
+  <button id="muteBtn">마이크 끄기</button>
+  <p id="status">대기 중...</p>
+
+  <div class="videos">
+    <div class="box">
+      <h2>내 화면</h2>
+      <video id="localVideo" autoplay playsinline muted></video>
+    </div>
+
+    <div class="box">
+      <h2>상대방 화면</h2>
+      <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js?v=1"></script>
+</body>
+
+</html>
