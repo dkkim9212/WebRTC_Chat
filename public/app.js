@@ -17,6 +17,72 @@ const localVideo = document.getElementById("localVideo")
 // 상대방 화면을 보여줄 video 태그 가져오기
 const remoteVideo = document.getElementById("remoteVideo")
 
+// 마이크 선택 select 가져오기
+const micSelect = document.getElementById("micSelect")
+
+// 스피커 선택 select 가져오기
+const speakerSelect = document.getElementById("speakerSelect")
+
+// 상대방 소리 조절 range 가져오기
+const remoteVolume = document.getElementById("remoteVolume")
+
+// 내 마이크 음량 조절 range 가져오기
+const micVolume = document.getElementById("micVolume")
+
+// 마이크 끄기/켜기 버튼 가져오기
+const muteBtn = document.getElementById("muteBtn")
+
+// 상대방 소리 끄기/켜기 버튼
+const remoteMuteBtn = document.getElementById("remoteMuteBtn")
+
+// 상대방 소리 아이콘
+const remoteMuteIcon = document.getElementById("remoteMuteIcon")
+
+// 화면 영역 가져오기
+const videoStage = document.getElementById("videoStage")
+
+// 상대방 화면 카드
+const remoteCard = document.getElementById("remoteCard")
+
+// 내 화면 카드
+const localCard = document.getElementById("localCard")
+
+// 음소거 아이콘
+const muteIcon = document.getElementById("muteIcon")
+
+// 오디오 설정 패널
+const controlPanel = document.getElementById("controlPanel")
+
+// 오디오 설정 열기 버튼
+const controlToggleBtn = document.getElementById("controlToggleBtn")
+
+// 오디오 설정 닫기 버튼
+const controlCloseBtn = document.getElementById("controlCloseBtn")
+
+// 오디오 설정 버튼 아이콘
+const controlToggleIcon = document.getElementById("controlToggleIcon")
+
+// 선택한 마이크 id 저장
+let selectedMicId = ""
+
+// 선택한 스피커 id 저장
+let selectedSpeakerId = ""
+
+// 마이크가 꺼져있는지 상태 저장
+let isMicMuted = false
+// 상대방 소리가 꺼져있는지 상태 저장
+let isRemoteMuted = false
+
+// 상대방 소리 끄기 전에 사용하던 볼륨 저장
+let lastRemoteVolumeBeforeMute = Number(remoteVolume.value || 0.5)
+
+// 마이크 끄기 전에 사용하던 마이크 음량 저장
+let lastMicVolumeBeforeMute = Number(micVolume.value || 1)
+
+// 마이크 음량 조절용 Web Audio 객체
+let audioContext = null
+let micGainNode = null
+
 // 현재 접속할 방 이름을 저장할 변수
 let roomId = ""
 
@@ -94,29 +160,13 @@ joinBtn.addEventListener("click", async () => {
 // 내 카메라/마이크를 가져오는 함수
 async function prepareLocalStream() {
     try {
-        // 브라우저에 카메라와 마이크 사용 요청
         localStream = await navigator.mediaDevices.getUserMedia({
             video: true,
-            audio: {
-                // 선택한 마이크가 있으면 해당 마이크 사용
-                deviceId: selectedMicId ? { exact: selectedMicId } : undefined,
-
-                // 에코 제거
-                echoCancellation: { ideal: true },
-
-                // 주변 소음 억제
-                noiseSuppression: { ideal: true },
-
-                // 자동 음량 조절
-                autoGainControl: { ideal: true },
-
-                // 음성 통화용으로 1채널 권장
-                channelCount: { ideal: 1 },
-
-                // 일반적인 WebRTC 음성 샘플레이트
-                sampleRate: { ideal: 48000 },
-            },
+            audio: getAudioConstraints(),
         })
+
+        // 내 마이크 음량 조절 적용
+        localStream = await applyMicGainToStream(localStream)
     } catch (error) {
         // 카메라 또는 마이크가 없거나 권한 문제가 있으면 여기로 들어옴
         console.warn("카메라/마이크 가져오기 실패:", error.name, error.message)
@@ -149,7 +199,10 @@ async function prepareLocalStream() {
         // 일부 브라우저에서 자동 재생이 막힐 수 있음
         console.warn("내 화면 재생 실패:", error.message)
     }
+    // 권한 허용 후 장치 목록 불러오기
+    await loadMediaDevices()
 }
+
 
 // 카메라가 없을 때 사용할 검은 화면 video track 생성 함수
 function createBlackVideoTrack() {
@@ -346,7 +399,6 @@ socket.on("ice-candidate", async (candidate) => {
 
 // 임시 저장된 ICE Candidate들을 처리하는 함수
 async function addPendingCandidates() {
-    W
     // pendingCandidates 배열에 값이 남아 있는 동안 반복
     while (pendingCandidates.length > 0) {
         // 배열의 맨 앞 candidate를 꺼냄
@@ -384,3 +436,458 @@ socket.on("peer-left", () => {
     // 상대방 화면 비우기
     remoteVideo.srcObject = remoteStream
 })
+
+
+// 마이크 옵션 만드는 함수
+function getAudioConstraints() {
+    return {
+        // 선택한 마이크가 있으면 해당 마이크 사용
+        deviceId: selectedMicId ? { exact: selectedMicId } : undefined,
+
+        // 에코 제거
+        echoCancellation: { ideal: true },
+
+        // 주변 소음 억제
+        noiseSuppression: { ideal: true },
+
+        // 자동 음량 조절
+        autoGainControl: { ideal: true },
+
+        // 음성 통화용 1채널 권장
+        channelCount: { ideal: 1 },
+
+        // WebRTC 음성 샘플레이트
+        sampleRate: { ideal: 48000 },
+    }
+}
+
+async function applyMicGainToStream(stream) {
+    // stream 안에서 오디오 트랙만 꺼냄
+    const audioTracks = stream.getAudioTracks()
+
+    // 마이크가 없으면 원래 stream 그대로 반환
+    if (audioTracks.length === 0) {
+        return stream
+    }
+
+    // 기존 video track들은 그대로 유지
+    const videoTracks = stream.getVideoTracks()
+
+    // AudioContext 생성
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    audioContext = new AudioContextClass()
+
+    // 브라우저 정책 때문에 멈춰 있으면 다시 실행
+    if (audioContext.state === "suspended") {
+        await audioContext.resume()
+    }
+
+    // 기존 마이크 오디오 트랙을 MediaStream으로 감쌈
+    const audioStream = new MediaStream([audioTracks[0]])
+
+    // 오디오 소스 생성
+    const source = audioContext.createMediaStreamSource(audioStream)
+
+    // 볼륨 조절 노드 생성
+    micGainNode = audioContext.createGain()
+
+    // 현재 range 값으로 마이크 음량 설정
+    micGainNode.gain.value = Number(micVolume.value || 1)
+
+    // 최종 출력용 destination 생성
+    const destination = audioContext.createMediaStreamDestination()
+
+    // 마이크 소리 → 볼륨 조절 → 출력 스트림
+    source.connect(micGainNode)
+    micGainNode.connect(destination)
+
+    // 볼륨 조절이 적용된 새 오디오 트랙
+    const controlledAudioTrack = destination.stream.getAudioTracks()[0]
+
+    // video track + 조절된 audio track으로 새 stream 생성
+    const newStream = new MediaStream([
+        ...videoTracks,
+        controlledAudioTrack,
+    ])
+
+    return newStream
+}
+
+// 마이크/스피커 목록 불러오기
+async function loadMediaDevices() {
+    try {
+        // 브라우저에서 사용 가능한 장치 목록 가져오기
+        const devices = await navigator.mediaDevices.enumerateDevices()
+
+        // 마이크 목록
+        const microphones = devices.filter((device) => device.kind === "audioinput")
+
+        // 스피커 목록
+        const speakers = devices.filter((device) => device.kind === "audiooutput")
+
+        // 마이크 select 초기화
+        micSelect.innerHTML = `<option value="">기본 마이크</option>`
+
+        microphones.forEach((device, index) => {
+            const option = document.createElement("option")
+            option.value = device.deviceId
+            option.textContent = device.label || `마이크 ${index + 1}`
+
+            if (device.deviceId === selectedMicId) {
+                option.selected = true
+            }
+
+            micSelect.appendChild(option)
+        })
+
+        // 스피커 선택 기능 지원 여부 확인
+        if (!("setSinkId" in HTMLMediaElement.prototype)) {
+            speakerSelect.innerHTML = `<option value="">스피커 선택 미지원</option>`
+            speakerSelect.disabled = true
+            return
+        }
+
+        // 스피커 select 초기화
+        speakerSelect.innerHTML = `<option value="">기본 스피커</option>`
+
+        speakers.forEach((device, index) => {
+            const option = document.createElement("option")
+            option.value = device.deviceId
+            option.textContent = device.label || `스피커 ${index + 1}`
+
+            if (device.deviceId === selectedSpeakerId) {
+                option.selected = true
+            }
+
+            speakerSelect.appendChild(option)
+        })
+    } catch (error) {
+        console.error("장치 목록 불러오기 실패:", error)
+    }
+}
+
+function updateRemoteMuteButton() {
+    if (isRemoteMuted) {
+        remoteMuteIcon.textContent = "🔇"
+        remoteMuteBtn.classList.add("is-off")
+        remoteMuteBtn.title = "상대방 소리 켜기"
+    } else {
+        remoteMuteIcon.textContent = "🔊"
+        remoteMuteBtn.classList.remove("is-off")
+        remoteMuteBtn.title = "상대방 소리 끄기"
+    }
+}
+
+// 상대방 소리 음소거 상태 변경
+function setRemoteMuted(nextMuted) {
+    isRemoteMuted = nextMuted
+
+    if (isRemoteMuted) {
+        const currentVolume = Number(remoteVolume.value)
+
+        if (currentVolume > 0) {
+            lastRemoteVolumeBeforeMute = currentVolume
+        }
+
+        remoteVolume.value = 0
+        remoteVideo.volume = 0
+    } else {
+        const restoreVolume = lastRemoteVolumeBeforeMute || 0.5
+
+        remoteVolume.value = restoreVolume
+        remoteVideo.volume = restoreVolume
+    }
+
+    updateRemoteMuteButton()
+}
+
+// 상대방 소리 조절
+remoteVolume.addEventListener("input", () => {
+    const volume = Number(remoteVolume.value)
+
+    if (!isRemoteMuted && volume > 0) {
+        lastRemoteVolumeBeforeMute = volume
+    }
+
+    // 소리가 꺼진 상태에서 슬라이더를 올리면 자동으로 켜기
+    if (isRemoteMuted && volume > 0) {
+        isRemoteMuted = false
+        updateRemoteMuteButton()
+    }
+
+    remoteVideo.volume = volume
+})
+
+// 상대방 소리 끄기/켜기
+remoteMuteBtn.addEventListener("click", () => {
+    setRemoteMuted(!isRemoteMuted)
+})
+
+// 내 마이크 음량 조절
+// 마이크 gain 값 변경
+function setMicGain(value) {
+    const volume = Number(value)
+
+    if (micGainNode) {
+        micGainNode.gain.value = volume
+    }
+}
+
+// 실제 WebRTC로 보내는 마이크 트랙 켜기/끄기
+function setMicrophoneTrackEnabled(enabled) {
+    // localStream 안의 오디오 트랙 제어
+    if (localStream) {
+        localStream.getAudioTracks().forEach((track) => {
+            track.enabled = enabled
+        })
+    }
+
+    // peerConnection sender 안의 오디오 트랙도 한 번 더 제어
+    // 이걸 같이 해주면 상대방에게 나가는 마이크가 더 확실히 꺼짐
+    if (peerConnection) {
+        peerConnection.getSenders().forEach((sender) => {
+            if (sender.track && sender.track.kind === "audio") {
+                sender.track.enabled = enabled
+            }
+        })
+    }
+}
+
+// 마이크 버튼 상태를 화면에 반영
+function updateMuteButton() {
+    if (isMicMuted) {
+        muteIcon.textContent = "🎙️"
+        muteIcon.classList.add("is-muted")
+        muteBtn.classList.add("is-off")
+        muteBtn.title = "마이크 켜기"
+    } else {
+        muteIcon.textContent = "🎙️"
+        muteIcon.classList.remove("is-muted")
+        muteBtn.classList.remove("is-off")
+        muteBtn.title = "마이크 끄기"
+    }
+}
+
+// 마이크 음소거 상태 변경
+function setMicMuted(nextMuted) {
+    isMicMuted = nextMuted
+
+    if (isMicMuted) {
+        // 끄기 전 음량 저장
+        const currentVolume = Number(micVolume.value)
+
+        if (currentVolume > 0) {
+            lastMicVolumeBeforeMute = currentVolume
+        }
+
+        // 슬라이더를 0으로 내림
+        micVolume.value = 0
+
+        // 실제 마이크 소리도 0으로 만듦
+        setMicGain(0)
+
+        // WebRTC 오디오 트랙 끄기
+        setMicrophoneTrackEnabled(false)
+    } else {
+        // 저장해둔 음량으로 복구
+        const restoreVolume = lastMicVolumeBeforeMute || 1
+
+        micVolume.value = restoreVolume
+
+        // 실제 마이크 소리 복구
+        setMicGain(restoreVolume)
+
+        // WebRTC 오디오 트랙 켜기
+        setMicrophoneTrackEnabled(true)
+    }
+
+    updateMuteButton()
+}
+
+// 내 마이크 음량 조절
+micVolume.addEventListener("input", () => {
+    const volume = Number(micVolume.value)
+
+    // 마이크가 켜져 있을 때만 마지막 음량 저장
+    if (!isMicMuted && volume > 0) {
+        lastMicVolumeBeforeMute = volume
+    }
+
+    // 마이크가 꺼진 상태에서 슬라이더를 올리면 자동으로 마이크 켜기
+    if (isMicMuted && volume > 0) {
+        isMicMuted = false
+        setMicrophoneTrackEnabled(true)
+        updateMuteButton()
+    }
+
+    setMicGain(volume)
+})
+
+// 마이크 끄기/켜기
+muteBtn.addEventListener("click", () => {
+    if (!localStream) {
+        return
+    }
+
+    setMicMuted(!isMicMuted)
+})
+
+// 스피커 선택
+speakerSelect.addEventListener("change", async () => {
+    selectedSpeakerId = speakerSelect.value
+
+    try {
+        if ("setSinkId" in remoteVideo) {
+            await remoteVideo.setSinkId(selectedSpeakerId)
+            console.log("스피커 변경:", selectedSpeakerId)
+        } else {
+            alert("이 브라우저는 스피커 선택을 지원하지 않습니다.")
+        }
+    } catch (error) {
+        console.error("스피커 변경 실패:", error)
+        alert("스피커 변경에 실패했습니다.")
+    }
+})
+
+// 마이크 선택
+micSelect.addEventListener("change", async () => {
+    selectedMicId = micSelect.value
+
+    // 아직 입장 전이면 선택값만 저장
+    if (!localStream) {
+        return
+    }
+
+    await changeMicrophone()
+})
+
+// 마이크를 변경하는 함수
+async function changeMicrophone() {
+    try {
+        // 새 마이크 스트림 가져오기
+        let newStream = await navigator.mediaDevices.getUserMedia({
+            video: false,
+            audio: getAudioConstraints(),
+        })
+
+        // 새 마이크에도 볼륨 조절 적용
+        newStream = await applyMicGainToStream(newStream)
+
+        const newAudioTrack = newStream.getAudioTracks()[0]
+
+        // 현재 음소거 상태 반영
+        newAudioTrack.enabled = !isMicMuted
+
+        // 기존 오디오 트랙 제거
+        const oldAudioTrack = localStream.getAudioTracks()[0]
+
+        if (oldAudioTrack) {
+            localStream.removeTrack(oldAudioTrack)
+            oldAudioTrack.stop()
+        }
+
+        // localStream에 새 오디오 트랙 추가
+        localStream.addTrack(newAudioTrack)
+
+        // WebRTC 연결 중이면 상대방에게 보내는 트랙도 교체
+        if (peerConnection) {
+            const sender = peerConnection
+                .getSenders()
+                .find((sender) => sender.track && sender.track.kind === "audio")
+
+            if (sender) {
+                await sender.replaceTrack(newAudioTrack)
+            } else {
+                peerConnection.addTrack(newAudioTrack, localStream)
+            }
+        }
+
+        console.log("마이크 변경 완료")
+    } catch (error) {
+        console.error("마이크 변경 실패:", error)
+        alert("마이크 변경에 실패했습니다.")
+    }
+}
+
+// 현재 어떤 화면이 큰 화면인지 확인하는 함수
+function isMainCard(card) {
+    const isLocalMain = videoStage.classList.contains("local-main")
+
+    if (isLocalMain) {
+        return card === localCard
+    }
+
+    return card === remoteCard
+}
+
+// 전체화면으로 여는 함수
+async function openFullscreen(element) {
+    try {
+        if (document.fullscreenElement) {
+            return
+        }
+
+        if (element.requestFullscreen) {
+            await element.requestFullscreen()
+        }
+    } catch (error) {
+        console.error("전체화면 전환 실패:", error)
+    }
+}
+
+// 내 화면 카드 클릭
+localCard.addEventListener("click", async () => {
+    // 내 화면이 이미 큰 화면이면 전체화면
+    if (isMainCard(localCard)) {
+        await openFullscreen(localCard)
+        return
+    }
+
+    // 내 화면을 큰 화면으로 변경
+    videoStage.classList.add("local-main")
+})
+
+// 상대방 화면 카드 클릭
+remoteCard.addEventListener("click", async () => {
+    // 상대방 화면이 이미 큰 화면이면 전체화면
+    if (isMainCard(remoteCard)) {
+        await openFullscreen(remoteCard)
+        return
+    }
+
+    // 상대방 화면을 큰 화면으로 변경
+    videoStage.classList.remove("local-main")
+})
+
+// 오디오 설정 패널 열고 닫기
+function toggleControlPanel() {
+    controlPanel.classList.toggle("is-open")
+
+    const isOpen = controlPanel.classList.contains("is-open")
+    controlToggleIcon.textContent = isOpen ? "×" : "🎚️"
+    controlToggleBtn.title = isOpen ? "오디오 설정 닫기" : "오디오 설정"
+}
+
+// 오디오 설정 버튼 클릭
+controlToggleBtn.addEventListener("click", (event) => {
+    event.stopPropagation()
+    toggleControlPanel()
+})
+
+// 닫기 버튼 클릭
+controlCloseBtn.addEventListener("click", (event) => {
+    event.stopPropagation()
+    controlPanel.classList.remove("is-open")
+    controlToggleIcon.textContent = "🎚️"
+    controlToggleBtn.title = "오디오 설정"
+})
+
+// 패널 안을 눌렀을 때 큰 화면 클릭 이벤트로 넘어가지 않게 막기
+controlPanel.addEventListener("click", (event) => {
+    event.stopPropagation()
+})
+
+updateMuteButton()
+updateRemoteMuteButton()
+
+remoteVideo.volume = Number(remoteVolume.value)
