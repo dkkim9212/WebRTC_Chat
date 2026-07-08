@@ -7,6 +7,8 @@ const roomInput = document.getElementById("roomInput")
 
 // HTML에서 방 입장 버튼 가져오기
 const joinBtn = document.getElementById("joinBtn")
+// 방 나가기 버튼 가져오기
+const leaveBtn = document.getElementById("leaveBtn")
 
 // HTML에서 현재 상태를 보여줄 영역 가져오기
 const statusText = document.getElementById("status")
@@ -100,6 +102,9 @@ let peerConnection = null
 // remoteDescription이 설정되기 전에 candidate가 오면 바로 추가하면 오류날 수 있음
 let pendingCandidates = []
 
+let isJoining = false
+let isInRoom = false
+
 // WebRTC에서 사용할 STUN 서버 설정
 // STUN 서버는 내 네트워크 주소를 찾는 데 도움을 줌
 const iceServers = {
@@ -118,6 +123,9 @@ socket.on("connect", () => {
 
 // 방 입장 버튼을 클릭했을 때 실행
 joinBtn.addEventListener("click", async () => {
+    if (isJoining || isInRoom) {
+        return
+    }
     // 입력창에 적은 방 이름을 가져오고 앞뒤 공백 제거
     roomId = roomInput.value.trim()
 
@@ -127,8 +135,11 @@ joinBtn.addEventListener("click", async () => {
         return
     }
 
+    isJoining = true
+
     // 버튼을 여러 번 누르면 연결이 꼬일 수 있으므로 비활성화
     joinBtn.disabled = true
+    leaveBtn.disabled = true
 
     // 화면에 현재 상태 표시
     statusText.textContent = "카메라 준비 중..."
@@ -143,17 +154,28 @@ joinBtn.addEventListener("click", async () => {
         // 상태 표시 변경
         statusText.textContent = "방 입장 중..."
 
+        leaveBtn.disabled = false
+
         // 서버에 방 입장 요청
         socket.emit("join-room", roomId)
+
+
     } catch (error) {
         // 위 과정 중 오류가 나면 여기로 들어옴
         console.error("입장 오류:", error)
 
-        // 오류 내용을 알림으로 표시
         alert(`입장 오류: ${error.name}\n${error.message}`)
 
-        // 다시 입장 버튼을 누를 수 있게 활성화
+        isJoining = false
+        isInRoom = false
+        roomId = ""
+
         joinBtn.disabled = false
+        leaveBtn.disabled = true
+
+        closePeerConnection()
+        clearRemoteStream()
+        stopLocalStream()
     }
 })
 
@@ -308,20 +330,39 @@ function createPeerConnection() {
 
 // 내가 첫 번째 입장자일 때 서버가 보내주는 이벤트
 socket.on("room-created", () => {
+    isJoining = false
+    isInRoom = true
+
+    joinBtn.disabled = true
+    leaveBtn.disabled = false
+
     statusText.textContent = "방 생성 완료. 상대방을 기다리는 중..."
 })
 
 // 내가 두 번째 입장자일 때 서버가 보내주는 이벤트
 socket.on("room-joined", async () => {
+    isJoining = false
+    isInRoom = true
+
+    joinBtn.disabled = true
+    leaveBtn.disabled = false
+
     statusText.textContent = "방 입장 완료. offer 생성 중..."
 
-    // 두 번째 입장자가 offer를 만들어서 첫 번째 사람에게 보냄
+    if (!peerConnection && localStream) {
+        createPeerConnection()
+    }
+
     await createOffer()
 })
 
 // 첫 번째 입장자에게 상대방이 들어왔다는 것을 알려주는 이벤트
 socket.on("peer-joined", () => {
     statusText.textContent = "상대방이 입장했습니다. 연결 대기 중..."
+
+    if (!peerConnection && localStream) {
+        createPeerConnection()
+    }
 })
 
 // offer를 생성하는 함수
@@ -345,6 +386,9 @@ socket.on("offer", async (offer) => {
     try {
         statusText.textContent = "offer 받음. answer 생성 중..."
 
+        if (!peerConnection && localStream) {
+            createPeerConnection()
+        }
         // 상대방의 offer를 내 브라우저에 저장
         await peerConnection.setRemoteDescription(offer)
 
@@ -411,30 +455,121 @@ async function addPendingCandidates() {
 
 // 방 입장 오류가 났을 때 서버가 보내주는 이벤트
 socket.on("room-error", (message) => {
-    // 오류 메시지 알림
-    alert(message)
+    console.warn("방 입장 오류:", message)
 
-    // 상태 표시
     statusText.textContent = message
 
-    // 다시 방 입장 버튼을 누를 수 있게 활성화
+    isJoining = false
+    isInRoom = false
+    roomId = ""
+
+    closePeerConnection()
+    clearRemoteStream()
+    stopLocalStream()
+
     joinBtn.disabled = false
+    leaveBtn.disabled = true
+
+    alert(message)
+})
+
+// WebRTC 연결만 닫는 함수
+function closePeerConnection() {
+    if (!peerConnection) {
+        return
+    }
+
+    peerConnection.ontrack = null
+    peerConnection.onicecandidate = null
+    peerConnection.onconnectionstatechange = null
+    peerConnection.oniceconnectionstatechange = null
+
+    peerConnection.close()
+    peerConnection = null
+
+    pendingCandidates = []
+}
+
+// 상대방 화면 비우기
+function clearRemoteStream() {
+    if (remoteStream) {
+        remoteStream.getTracks().forEach((track) => {
+            track.stop()
+        })
+    }
+
+    remoteStream = new MediaStream()
+    remoteVideo.srcObject = remoteStream
+}
+
+// 내 카메라/마이크 끄기
+function stopLocalStream() {
+    if (localStream) {
+        localStream.getTracks().forEach((track) => {
+            track.stop()
+        })
+    }
+
+    localStream = null
+    localVideo.srcObject = null
+
+    if (audioContext) {
+        audioContext.close()
+    }
+
+    audioContext = null
+    micGainNode = null
+}
+
+// 내가 방에서 나가는 함수
+function leaveRoom() {
+    if (!isInRoom || !roomId) {
+        return
+    }
+
+    socket.emit("leave-room")
+
+    closePeerConnection()
+    clearRemoteStream()
+    stopLocalStream()
+
+    roomId = ""
+    isJoining = false
+    isInRoom = false
+
+    isMicMuted = false
+    isRemoteMuted = false
+
+    micVolume.value = lastMicVolumeBeforeMute || 1
+    remoteVolume.value = lastRemoteVolumeBeforeMute || 0.5
+    remoteVideo.volume = Number(remoteVolume.value)
+
+    updateMuteButton()
+    updateRemoteMuteButton()
+
+    joinBtn.disabled = false
+    leaveBtn.disabled = true
+
+    statusText.textContent = "방에서 나갔습니다."
+}
+
+// 방 나가기 버튼 클릭
+leaveBtn.addEventListener("click", () => {
+    const ok = confirm("방에서 나가시겠습니까?")
+
+    if (!ok) {
+        return
+    }
+
+    leaveRoom()
 })
 
 // 상대방이 나갔을 때 서버가 보내주는 이벤트
 socket.on("peer-left", () => {
-    statusText.textContent = "상대방이 나갔습니다."
+    statusText.textContent = "상대방이 나갔습니다. 새 상대방을 기다리는 중..."
 
-    // 기존 상대방 스트림이 있으면 track들을 멈춤
-    if (remoteStream) {
-        remoteStream.getTracks().forEach((track) => track.stop())
-    }
-
-    // 새로운 빈 remoteStream 생성
-    remoteStream = new MediaStream()
-
-    // 상대방 화면 비우기
-    remoteVideo.srcObject = remoteStream
+    closePeerConnection()
+    clearRemoteStream()
 })
 
 

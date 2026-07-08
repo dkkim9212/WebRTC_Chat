@@ -41,7 +41,8 @@ io.on("connection", (socket) => {
 
     // 현재 해당 방에 누가 있는지 확인
     const room = io.sockets.adapter.rooms.get(roomId)
-
+    console.log("룸찍어보자 : ", room)
+    console.log("룸아이디찍어보자 : ", roomId)
     // 방이 있으면 현재 인원 수, 없으면 0명
     const userCount = room ? room.size : 0
 
@@ -110,18 +111,34 @@ io.on("connection", (socket) => {
     socket.to(roomId).emit("ice-candidate", candidate)
   })
 
-  // 사용자가 브라우저를 닫거나 새로고침하거나 연결이 끊겼을 때 실행
-  socket.on("disconnect", () => {
-    // 사용자가 들어가 있던 방 이름 가져오기
+  // 사용자가 방 나가기 버튼을 눌렀을 때 실행
+  socket.on("leave-room", () => {
     const roomId = socket.data.roomId
 
-    // 방에 들어간 상태였다면
+    if (!roomId) {
+      return
+    }
+
+    // 상대방에게 나갔다고 알림
+    socket.to(roomId).emit("peer-left")
+
+    // 실제 Socket.IO 방에서 나가기
+    socket.leave(roomId)
+
+    // 서버에 저장된 방 정보 삭제
+    delete socket.data.roomId
+
+    console.log("방 나감:", socket.id, roomId)
+  })
+
+  // 사용자가 브라우저를 닫거나 새로고침하거나 연결이 끊겼을 때 실행
+  socket.on("disconnect", () => {
+    const roomId = socket.data.roomId
+
     if (roomId) {
-      // 같은 방의 상대방에게 내가 나갔다고 알림
       socket.to(roomId).emit("peer-left")
     }
 
-    // 서버 터미널에 나간 사람 socket id 출력
     console.log("나감:", socket.id)
   })
 })

@@ -471,6 +471,14 @@ select {
     .control-panel.is-open .control-body {
         transform: translateY(0) scale(1);
     }
+
+    .room-actions {
+        width: 100%;
+    }
+
+    .room-actions button {
+        min-width: 0;
+    }
 }
 
 @media (max-width: 520px) {
@@ -523,4 +531,37 @@ select {
     border-radius: 999px;
     transform: rotate(-35deg);
     transform-origin: center;
+}
+
+.room-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.room-actions button {
+    flex: 1;
+    min-width: 120px;
+}
+
+.leave-btn {
+    height: 44px;
+    border: 1px solid rgba(248, 113, 113, 0.42);
+    border-radius: 14px;
+    padding: 0 24px;
+    color: #fecaca;
+    font-weight: 800;
+    background: rgba(239, 68, 68, 0.16);
+    cursor: pointer;
+    transition: transform 0.18s ease, opacity 0.18s ease, background 0.18s ease;
+}
+
+.leave-btn:hover {
+    transform: translateY(-1px);
+    background: rgba(239, 68, 68, 0.26);
+}
+
+.leave-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
 }
