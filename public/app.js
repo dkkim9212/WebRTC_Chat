@@ -63,6 +63,19 @@ const controlCloseBtn = document.getElementById("controlCloseBtn")
 
 // 오디오 설정 버튼 아이콘
 const controlToggleIcon = document.getElementById("controlToggleIcon")
+//화면 공유 버튼
+const shareScreenBtn = document.getElementById("shareScreenBtn")
+
+// 원래 카메라 트랙
+let cameraVideoTrack = null
+
+let fallbackVideoTrack = null
+
+// 현재 화면 공유 트랙
+let screenVideoTrack = null
+
+// 화면 공유 중인지 확인
+let isScreenSharing = false
 
 // 선택한 마이크 id 저장
 let selectedMicId = ""
@@ -119,6 +132,14 @@ const iceServers = {
 // 디버깅할 때는 켜두는 게 좋음
 socket.on("connect", () => {
     console.log("소켓 연결됨:", socket.id)
+})
+// 화면 공유 버튼 이벤트
+shareScreenBtn.addEventListener("click", async () => {
+    if (isScreenSharing) {
+        await stopScreenShare()
+    } else {
+        await startScreenShare()
+    }
 })
 
 // 방 입장 버튼을 클릭했을 때 실행
@@ -179,52 +200,134 @@ joinBtn.addEventListener("click", async () => {
     }
 })
 
+// 가상 화면 장치 확인 함수
+function isProbablyScreenDevice(track) {
+    const label = (track?.label || "").toLowerCase()
+
+    const screenWords = [
+        "screen",
+        "display",
+        "capture",
+        "virtual",
+        "obs",
+        "manycam",
+        "xsplit",
+        "화면",
+        "스크린",
+        "캡처",
+        "가상",
+    ]
+
+    return screenWords.some((word) => label.includes(word))
+}
 // 내 카메라/마이크를 가져오는 함수
 async function prepareLocalStream() {
+    const tracks = []
+
+    cameraVideoTrack = null
+    fallbackVideoTrack = null
+
+    // 1. 카메라만 따로 요청
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: getAudioConstraints(),
-        })
+        const cameraStream =
+            await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: {
+                        ideal: "user",
+                    },
+                },
+                audio: false,
+            })
 
-        // 내 마이크 음량 조절 적용
-        localStream = await applyMicGainToStream(localStream)
+        const videoTrack =
+            cameraStream.getVideoTracks()[0] || null
+
+        console.log(
+            "선택된 영상 장치:",
+            videoTrack?.label
+        )
+
+        console.log(
+            "영상 설정:",
+            videoTrack?.getSettings()
+        )
+
+        // 화면 캡처 또는 가상 카메라처럼 보이면 사용하지 않음
+        if (
+            videoTrack &&
+            !isProbablyScreenDevice(videoTrack)
+        ) {
+            cameraVideoTrack = videoTrack
+            tracks.push(cameraVideoTrack)
+        } else {
+            console.warn(
+                "화면 캡처 또는 가상 장치로 판단되어 카메라로 사용하지 않습니다."
+            )
+
+            cameraStream
+                .getTracks()
+                .forEach((track) => track.stop())
+        }
     } catch (error) {
-        // 카메라 또는 마이크가 없거나 권한 문제가 있으면 여기로 들어옴
-        console.warn("카메라/마이크 가져오기 실패:", error.name, error.message)
+        console.warn(
+            "카메라 사용 불가:",
+            error.name,
+            error.message
+        )
+    }
 
-        // 빈 MediaStream 생성
-        localStream = new MediaStream()
+    // 2. 실제 카메라가 없으면 검은 대체 트랙 사용
+    if (!cameraVideoTrack) {
+        fallbackVideoTrack = createBlackVideoTrack()
 
-        // 카메라가 없을 때 대신 보여줄 검은 화면 트랙 생성
-        const blackTrack = createBlackVideoTrack()
-
-        // 검은 화면 트랙 생성에 성공하면 localStream에 추가
-        if (blackTrack) {
-            localStream.addTrack(blackTrack)
+        if (fallbackVideoTrack) {
+            tracks.push(fallbackVideoTrack)
         }
     }
 
-    // 내 video 태그에 localStream 연결
+    // 3. 마이크는 카메라와 별도로 요청
+    try {
+        let micStream =
+            await navigator.mediaDevices.getUserMedia({
+                video: false,
+                audio: getAudioConstraints(),
+            })
+
+        micStream =
+            await applyMicGainToStream(micStream)
+
+        const audioTrack =
+            micStream.getAudioTracks()[0] || null
+
+        if (audioTrack) {
+            tracks.push(audioTrack)
+        }
+    } catch (error) {
+        console.warn(
+            "마이크 사용 불가:",
+            error.name,
+            error.message
+        )
+    }
+
+    // 카메라 또는 검은 화면 + 마이크로 스트림 구성
+    localStream = new MediaStream(tracks)
+
     localVideo.srcObject = localStream
-
-    // 내 마이크 소리가 내 스피커로 다시 나오지 않게 음소거
     localVideo.muted = true
-
-    // 모바일 브라우저에서 video가 전체화면으로 강제 재생되지 않도록 설정
     localVideo.playsInline = true
 
     try {
-        // 내 화면 재생
         await localVideo.play()
     } catch (error) {
-        // 일부 브라우저에서 자동 재생이 막힐 수 있음
-        console.warn("내 화면 재생 실패:", error.message)
+        console.warn(
+            "내 화면 재생 실패:",
+            error.message
+        )
     }
-    // 권한 허용 후 장치 목록 불러오기
+
     await loadMediaDevices()
 }
-
 
 // 카메라가 없을 때 사용할 검은 화면 video track 생성 함수
 function createBlackVideoTrack() {
@@ -519,16 +622,39 @@ function stopLocalStream() {
 
     audioContext = null
     micGainNode = null
+
+    // 화면 공유 트랙이 남아 있으면 종료
+    if (screenVideoTrack) {
+        screenVideoTrack.stop()
+    }
+
+    // 카메라와 화면 공유 상태 초기화
+    cameraVideoTrack = null
+    screenVideoTrack = null
+    isScreenSharing = false
+    // 가상화면
+    fallbackVideoTrack = null
+
+    // 화면 공유 버튼 초기화
+    shareScreenBtn.textContent = "화면 공유"
 }
 
 // 내가 방에서 나가는 함수
-function leaveRoom() {
+async function leaveRoom() {
     if (!isInRoom || !roomId) {
         return
     }
 
+    // 화면 공유 중이면 먼저 화면 공유 종료
+    // peerConnection을 닫기 전에 실행해야 함
+    if (isScreenSharing || screenVideoTrack) {
+        await stopScreenShare()
+    }
+
+    // 서버에 방 나가기 알림
     socket.emit("leave-room")
 
+    // WebRTC 연결과 스트림 정리
     closePeerConnection()
     clearRemoteStream()
     stopLocalStream()
@@ -554,14 +680,14 @@ function leaveRoom() {
 }
 
 // 방 나가기 버튼 클릭
-leaveBtn.addEventListener("click", () => {
+leaveBtn.addEventListener("click", async () => {
     const ok = confirm("방에서 나가시겠습니까?")
 
     if (!ok) {
         return
     }
 
-    leaveRoom()
+    await leaveRoom()
 })
 
 // 상대방이 나갔을 때 서버가 보내주는 이벤트
@@ -1021,6 +1147,202 @@ controlCloseBtn.addEventListener("click", (event) => {
 controlPanel.addEventListener("click", (event) => {
     event.stopPropagation()
 })
+
+function getVideoSender() {
+    if (!peerConnection) {
+        return null
+    }
+
+    return peerConnection
+        .getSenders()
+        .find((sender) => {
+            return sender.track && sender.track.kind === "video"
+        })
+}
+
+async function startScreenShare() {
+    if (!peerConnection) {
+        alert("먼저 방에 입장하세요.")
+        return
+    }
+
+    if (isScreenSharing) {
+        return
+    }
+
+    try {
+        const screenStream =
+            await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    frameRate: {
+                        ideal: 15,
+                        max: 30,
+                    },
+                },
+
+                audio: false,
+
+                // 지원하는 브라우저에서는 전체 모니터 선택 항목 제외
+                monitorTypeSurfaces: "exclude",
+
+                // 현재 화상채팅 탭을 공유 대상으로 표시하지 않음
+                selfBrowserSurface: "exclude",
+            })
+
+        const newScreenTrack =
+            screenStream.getVideoTracks()[0]
+
+        if (!newScreenTrack) {
+            throw new Error("화면 공유 트랙이 없습니다.")
+        }
+
+        // 실제로 사용자가 무엇을 선택했는지 확인
+        const settings = newScreenTrack.getSettings()
+        const displaySurface = settings.displaySurface
+
+        console.log("화면 공유 종류:", displaySurface)
+
+        /*
+         * monitor = 전체 화면
+         * window  = 특정 프로그램 창
+         * browser = 특정 브라우저 탭
+         */
+        if (displaySurface === "monitor") {
+            screenStream
+                .getTracks()
+                .forEach((track) => track.stop())
+
+            alert(
+                "전체 화면을 공유하면 같은 모니터에서 " +
+                "재귀 현상이 발생합니다.\n\n" +
+                "특정 창 또는 브라우저 탭을 선택해 주세요."
+            )
+
+            return
+        }
+
+        const videoSender = peerConnection
+            .getSenders()
+            .find((sender) => {
+                return sender.track?.kind === "video"
+            })
+
+        if (!videoSender) {
+            screenStream
+                .getTracks()
+                .forEach((track) => track.stop())
+
+            throw new Error("영상 전송 정보를 찾지 못했습니다.")
+        }
+
+        screenVideoTrack = newScreenTrack
+
+        // 상대방에게 전송하는 영상만 화면 공유로 교체
+        await videoSender.replaceTrack(screenVideoTrack)
+
+        isScreenSharing = true
+
+        shareScreenBtn.textContent = "화면 공유 중지"
+        shareScreenBtn.classList.add("is-sharing")
+
+        statusText.textContent =
+            "화면을 공유하고 있습니다."
+
+        /*
+         * 절대 localVideo에 screenStream을 넣지 않음
+         * localVideo는 기존 카메라 화면을 계속 표시
+         */
+        localVideo.srcObject = localStream
+
+        // 브라우저 공유 중지 버튼을 눌렀을 때
+        screenVideoTrack.addEventListener(
+            "ended",
+            async () => {
+                if (isScreenSharing) {
+                    await stopScreenShare()
+                }
+            },
+            {
+                once: true,
+            }
+        )
+    } catch (error) {
+        console.error(
+            "화면 공유 시작 실패:",
+            error
+        )
+
+        // 화면 선택창에서 취소한 경우
+        if (
+            error.name === "NotAllowedError" ||
+            errstopor.name === "AbortError"
+        ) {
+            return
+        }
+
+        alert(
+            `화면 공유 실패: ${error.message}`
+        )
+    }
+}
+
+async function stopScreenShare() {
+    if (!isScreenSharing && !screenVideoTrack) {
+        return
+    }
+
+    const oldScreenTrack = screenVideoTrack
+
+    isScreenSharing = false
+    screenVideoTrack = null
+
+    try {
+        const videoSender = peerConnection
+            ?.getSenders()
+            .find((sender) => {
+                return sender.track?.kind === "video"
+            })
+
+        // 다시 카메라 영상으로 교체
+        const restoreVideoTrack =
+            cameraVideoTrack?.readyState === "live"
+                ? cameraVideoTrack
+                : fallbackVideoTrack
+
+        if (
+            videoSender &&
+            restoreVideoTrack &&
+            restoreVideoTrack.readyState === "live"
+        ) {
+            await videoSender.replaceTrack(
+                restoreVideoTrack
+            )
+        }
+
+        if (
+            oldScreenTrack &&
+            oldScreenTrack.readyState === "live"
+        ) {
+            oldScreenTrack.stop()
+        }
+    } catch (error) {
+        console.error(
+            "화면 공유 종료 실패:",
+            error
+        )
+    }
+
+    // 내 미리보기는 계속 카메라
+    if (localStream) {
+        localVideo.srcObject = localStream
+    }
+
+    shareScreenBtn.textContent = "화면 공유"
+    shareScreenBtn.classList.remove("is-sharing")
+
+    statusText.textContent =
+        "카메라를 공유하고 있습니다."
+}
 
 updateMuteButton()
 updateRemoteMuteButton()
