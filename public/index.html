@@ -8,7 +8,7 @@
   <title>DAGAWA 화상채팅</title>
 
   <!-- CSS 분리 -->
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=41" />
 </head>
 
 <body>
@@ -57,6 +57,24 @@
         </div>
 
         <div class="click-guide">클릭 시 크게 보기</div>
+      </article>
+      // 화면 공유
+      <article id="screenShareCard" class="screen-share-card" hidden>
+        <div id="screenShareWaiting" class="screen-share-waiting">
+          <strong>화면 공유 중</strong>
+          <p>공유 화면을 시청하시겠습니까?</p>
+
+          <button id="watchScreenBtn">
+            화면 공유 시청하기
+          </button>
+        </div>
+
+        <video id="screenShareVideo" autoplay playsinline muted hidden>
+        </video>
+
+        <button id="leaveScreenViewBtn" class="leave-screen-view-btn" hidden>
+          시청 나가기
+        </button>
       </article>
 
       <aside id="controlPanel" class="control-panel">
@@ -117,7 +135,7 @@
   </main>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=41"></script>
 </body>
 
 </html>

@@ -591,3 +591,108 @@ select {
     border-color: rgba(239, 68, 68, 0.55);
     background: rgba(239, 68, 68, 0.25);
 }
+.screen-share-card {
+    position: absolute;
+    inset: 0;
+    z-index: 15;
+    overflow: hidden;
+    background: #000;
+}
+
+.screen-share-card video {
+    width: 100%;
+    height: 100%;
+
+    /* 공유 화면 전체가 잘리지 않고 보임 */
+    object-fit: contain;
+    object-position: center;
+
+    background: #000;
+}
+
+.screen-share-waiting {
+    position: absolute;
+    inset: 0;
+
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 14px;
+
+    background:
+        radial-gradient(
+            circle,
+            rgba(59, 130, 246, 0.2),
+            transparent 50%
+        ),
+        #020617;
+}
+
+.screen-share-waiting strong {
+    font-size: 24px;
+}
+
+.screen-share-waiting p {
+    margin: 0;
+    color: #cbd5e1;
+}
+
+#watchScreenBtn {
+    height: 46px;
+    padding: 0 24px;
+    border: 0;
+    border-radius: 14px;
+
+    color: #020617;
+    font-weight: 800;
+    background: linear-gradient(
+        135deg,
+        #60a5fa,
+        #a78bfa
+    );
+
+    cursor: pointer;
+}
+
+.leave-screen-view-btn {
+    position: absolute;
+    right: 20px;
+    bottom: 20px;
+    z-index: 20;
+
+    height: 42px;
+    padding: 0 18px;
+    border: 1px solid rgba(248, 113, 113, 0.5);
+    border-radius: 14px;
+
+    color: #fecaca;
+    background: rgba(239, 68, 68, 0.25);
+    cursor: pointer;
+}
+
+.screen-share-card[hidden],
+.screen-share-waiting[hidden],
+#screenShareVideo[hidden],
+.leave-screen-view-btn[hidden] {
+    display: none !important;
+}
+
+#screenShareVideo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    background: #000;
+}
+
+.screen-share-card {
+    display: block;
+}
+
+.screen-share-card[hidden],
+.screen-share-waiting[hidden],
+#screenShareVideo[hidden],
+.leave-screen-view-btn[hidden] {
+    display: none !important;
+}

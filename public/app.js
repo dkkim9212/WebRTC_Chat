@@ -65,6 +65,21 @@ const controlCloseBtn = document.getElementById("controlCloseBtn")
 const controlToggleIcon = document.getElementById("controlToggleIcon")
 //화면 공유 버튼
 const shareScreenBtn = document.getElementById("shareScreenBtn")
+//화면 공유 파트
+const screenShareCard =
+    document.getElementById("screenShareCard")
+
+const screenShareWaiting =
+    document.getElementById("screenShareWaiting")
+
+const screenShareVideo =
+    document.getElementById("screenShareVideo")
+
+const watchScreenBtn =
+    document.getElementById("watchScreenBtn")
+
+const leaveScreenViewBtn =
+    document.getElementById("leaveScreenViewBtn")
 
 // 원래 카메라 트랙
 let cameraVideoTrack = null
@@ -73,9 +88,6 @@ let fallbackVideoTrack = null
 
 // 현재 화면 공유 트랙
 let screenVideoTrack = null
-
-// 화면 공유 중인지 확인
-let isScreenSharing = false
 
 // 선택한 마이크 id 저장
 let selectedMicId = ""
@@ -104,6 +116,26 @@ let roomId = ""
 // 내 카메라/마이크 스트림을 저장할 변수
 let localStream = null
 
+// 내가 공유하는 화면
+let localScreenStream = null
+
+// 상대방에게 받은 공유 화면
+let remoteScreenStream = null
+
+// 현재 재생할 공유 화면
+let availableScreenStream = null
+
+// 화면 공유 전용 WebRTC 연결
+let screenPeerConnection = null
+
+// 화면 공유 ICE 후보 임시 저장
+let pendingScreenCandidates = []
+
+// 현재 화면 공유 중인지
+let isScreenSharing = false
+
+// 현재 공유 화면을 시청 중인지
+let isWatchingScreen = false
 // 상대방 영상/음성 스트림을 저장할 변수
 let remoteStream = null
 
@@ -133,14 +165,7 @@ const iceServers = {
 socket.on("connect", () => {
     console.log("소켓 연결됨:", socket.id)
 })
-// 화면 공유 버튼 이벤트
-shareScreenBtn.addEventListener("click", async () => {
-    if (isScreenSharing) {
-        await stopScreenShare()
-    } else {
-        await startScreenShare()
-    }
-})
+
 
 // 방 입장 버튼을 클릭했을 때 실행
 joinBtn.addEventListener("click", async () => {
@@ -199,7 +224,6 @@ joinBtn.addEventListener("click", async () => {
         stopLocalStream()
     }
 })
-
 // 가상 화면 장치 확인 함수
 function isProbablyScreenDevice(track) {
     const label = (track?.label || "").toLowerCase()
@@ -606,37 +630,62 @@ function clearRemoteStream() {
 }
 
 // 내 카메라/마이크 끄기
+// 내 카메라, 마이크, 화면 공유 모두 종료
 function stopLocalStream() {
+    // 1. 카메라와 마이크 스트림 종료
     if (localStream) {
         localStream.getTracks().forEach((track) => {
             track.stop()
         })
     }
 
-    localStream = null
+    // 2. 내가 공유 중인 화면 스트림 종료
+    if (localScreenStream) {
+        localScreenStream.getTracks().forEach((track) => {
+            if (track.readyState === "live") {
+                track.stop()
+            }
+        })
+    }
+
+    // 3. 내 영상 태그 비우기
+    localVideo.pause()
     localVideo.srcObject = null
 
-    if (audioContext) {
+    // 4. 오디오 처리 종료
+    if (
+        audioContext &&
+        audioContext.state !== "closed"
+    ) {
         audioContext.close()
     }
 
     audioContext = null
     micGainNode = null
 
-    // 화면 공유 트랙이 남아 있으면 종료
-    if (screenVideoTrack) {
-        screenVideoTrack.stop()
-    }
-
-    // 카메라와 화면 공유 상태 초기화
+    // 5. 일반 화상채팅 스트림 초기화
+    localStream = null
     cameraVideoTrack = null
-    screenVideoTrack = null
-    isScreenSharing = false
-    // 가상화면
     fallbackVideoTrack = null
 
-    // 화면 공유 버튼 초기화
+    // 6. 화면 공유 스트림과 상태 초기화
+    localScreenStream = null
+    remoteScreenStream = null
+    availableScreenStream = null
+    screenVideoTrack = null
+
+    isScreenSharing = false
+    isWatchingScreen = false
+
+    // 7. 화면 공유 전용 WebRTC 연결 종료
+    closeScreenPeerConnection()
+
+    // 8. 화면 공유 시청 카드 숨기기
+    hideScreenShare()
+
+    // 9. 화면 공유 버튼 원상 복구
     shareScreenBtn.textContent = "화면 공유"
+    shareScreenBtn.classList.remove("is-sharing")
 }
 
 // 내가 방에서 나가는 함수
@@ -692,10 +741,14 @@ leaveBtn.addEventListener("click", async () => {
 
 // 상대방이 나갔을 때 서버가 보내주는 이벤트
 socket.on("peer-left", () => {
-    statusText.textContent = "상대방이 나갔습니다. 새 상대방을 기다리는 중..."
+    statusText.textContent =
+        "상대방이 나갔습니다. 새 상대방을 기다리는 중..."
 
     closePeerConnection()
     clearRemoteStream()
+
+    closeScreenPeerConnection()
+    hideScreenShare()
 })
 
 
@@ -1148,20 +1201,492 @@ controlPanel.addEventListener("click", (event) => {
     event.stopPropagation()
 })
 
-function getVideoSender() {
-    if (!peerConnection) {
-        return null
+
+
+
+// 화면 공유가 있다는 카드 표시 함수
+function showScreenShareAvailable(stream) {
+    availableScreenStream = stream
+
+    screenShareCard.hidden = false
+    screenShareWaiting.hidden = false
+    screenShareVideo.hidden = true
+    leaveScreenViewBtn.hidden = true
+
+    isWatchingScreen = false
+}
+// ========================================
+// 화면 공유 전용 연결 종료
+// ========================================
+function closeScreenPeerConnection() {
+    if (screenPeerConnection) {
+        screenPeerConnection.onicecandidate = null
+        screenPeerConnection.ontrack = null
+        screenPeerConnection.onconnectionstatechange = null
+
+        screenPeerConnection.close()
+        screenPeerConnection = null
     }
 
-    return peerConnection
-        .getSenders()
-        .find((sender) => {
-            return sender.track && sender.track.kind === "video"
-        })
+    pendingScreenCandidates = []
 }
 
+
+// ========================================
+// 화면 공유 카드 표시
+// stream이 null이면 상대방 공유 알림만 표시
+// ========================================
+function showScreenShareAvailable(stream = null) {
+    availableScreenStream = stream
+
+    screenShareCard.hidden = false
+    screenShareWaiting.hidden = false
+    screenShareVideo.hidden = true
+    leaveScreenViewBtn.hidden = true
+
+    screenShareVideo.pause()
+    screenShareVideo.srcObject = null
+
+    watchScreenBtn.disabled = false
+    watchScreenBtn.textContent = stream
+        ? "화면 공유 시청하기"
+        : "상대방 화면 공유 시청하기"
+
+    isWatchingScreen = false
+}
+
+
+// ========================================
+// 화면 공유 카드 완전히 숨기기
+// ========================================
+function hideScreenShare() {
+    isWatchingScreen = false
+    availableScreenStream = null
+    remoteScreenStream = null
+
+    screenShareVideo.pause()
+    screenShareVideo.srcObject = null
+
+    screenShareCard.hidden = true
+    screenShareWaiting.hidden = false
+    screenShareVideo.hidden = true
+    leaveScreenViewBtn.hidden = true
+
+    watchScreenBtn.disabled = false
+    watchScreenBtn.textContent = "화면 공유 시청하기"
+}
+
+// 본인 공유 화면 전용 재생 함수
+async function startWatchingMyScreen() {
+    if (!localScreenStream) {
+        console.warn("내 화면 공유 스트림이 없습니다.")
+        return
+    }
+
+    const screenTrack =
+        localScreenStream.getVideoTracks()[0]
+
+    if (
+        !screenTrack ||
+        screenTrack.readyState !== "live"
+    ) {
+        console.warn("내 화면 공유 트랙이 종료되었습니다.")
+        return
+    }
+
+    /*
+     * 기존 스트림을 그대로 넣어도 되지만,
+     * 미리보기 전용 MediaStream을 따로 만들어 사용
+     */
+    availableScreenStream =
+        new MediaStream([screenTrack])
+
+    screenShareCard.hidden = false
+    screenShareCard.removeAttribute("hidden")
+
+    screenShareWaiting.hidden = true
+    screenShareWaiting.setAttribute("hidden", "")
+
+    screenShareVideo.hidden = false
+    screenShareVideo.removeAttribute("hidden")
+
+    leaveScreenViewBtn.hidden = false
+    leaveScreenViewBtn.removeAttribute("hidden")
+
+    screenShareVideo.muted = true
+    screenShareVideo.autoplay = true
+    screenShareVideo.playsInline = true
+    screenShareVideo.srcObject =
+        availableScreenStream
+
+    isWatchingScreen = true
+
+    try {
+        await screenShareVideo.play()
+        console.log("내 화면 공유 재생 성공")
+    } catch (error) {
+        console.error(
+            "내 화면 공유 재생 실패:",
+            error.name,
+            error.message
+        )
+
+        alert(
+            `내 공유 화면 재생 실패\n` +
+            `${error.name}: ${error.message}`
+        )
+    }
+}
+
+// ========================================
+// 실제 공유 화면 재생
+// ========================================
+async function startWatchingAvailableScreen() {
+    if (!availableScreenStream) {
+        console.warn("재생할 화면 공유 스트림이 없습니다.")
+        return
+    }
+
+    screenShareVideo.srcObject = availableScreenStream
+
+    screenShareWaiting.hidden = true
+    screenShareVideo.hidden = false
+    leaveScreenViewBtn.hidden = false
+
+    isWatchingScreen = true
+
+    try {
+        await screenShareVideo.play()
+        console.log("화면 공유 영상 재생 성공")
+    } catch (error) {
+        console.error("화면 공유 영상 재생 실패:", error)
+    }
+
+    watchScreenBtn.disabled = false
+    watchScreenBtn.textContent = "화면 공유 시청하기"
+}
+
+
+// ========================================
+// 화면 공유 전용 RTCPeerConnection 생성
+// ========================================
+function createScreenPeerConnection() {
+    closeScreenPeerConnection()
+
+    screenPeerConnection =
+        new RTCPeerConnection(iceServers)
+
+    // 내 ICE Candidate를 상대방에게 전달
+    screenPeerConnection.onicecandidate = (event) => {
+        if (!event.candidate) {
+            return
+        }
+
+        socket.emit(
+            "screen-ice-candidate",
+            event.candidate
+        )
+    }
+
+    // 상대방 화면 공유 트랙 도착
+    screenPeerConnection.ontrack = async (event) => {
+        console.log(
+            "화면 공유 트랙 도착:",
+            event.track.kind
+        )
+
+        remoteScreenStream =
+            event.streams[0] ||
+            new MediaStream([event.track])
+
+        availableScreenStream = remoteScreenStream
+
+        showScreenShareAvailable(remoteScreenStream)
+
+        // 사용자가 이미 시청하기를 눌러 연결한 것이므로 바로 재생
+        await startWatchingAvailableScreen()
+    }
+
+    screenPeerConnection.onconnectionstatechange = () => {
+        if (!screenPeerConnection) {
+            return
+        }
+
+        console.log(
+            "화면 공유 연결 상태:",
+            screenPeerConnection.connectionState
+        )
+    }
+}
+
+
+// ========================================
+// 대기 중인 화면 공유 ICE 추가
+// ========================================
+async function addPendingScreenCandidates() {
+    if (
+        !screenPeerConnection ||
+        !screenPeerConnection.remoteDescription
+    ) {
+        return
+    }
+
+    while (pendingScreenCandidates.length > 0) {
+        const candidate =
+            pendingScreenCandidates.shift()
+
+        await screenPeerConnection
+            .addIceCandidate(candidate)
+    }
+}
+
+
+// ========================================
+// 상대방이 화면 공유를 시작했을 때
+// ========================================
+socket.on("screen-share-started", () => {
+    console.log("상대방 화면 공유 시작 알림")
+
+    showScreenShareAvailable(null)
+
+    statusText.textContent =
+        "상대방이 화면을 공유하고 있습니다."
+})
+
+
+// ========================================
+// 시청하기 버튼
+// ========================================
+watchScreenBtn.addEventListener(
+    "click",
+    async (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+
+        console.log("화면 공유 시청 버튼 클릭")
+        console.log(
+            "내 공유 스트림:",
+            localScreenStream
+        )
+        console.log(
+            "상대방 공유 스트림:",
+            remoteScreenStream
+        )
+
+        if (!isInRoom || !roomId) {
+            alert("먼저 방에 입장하세요.")
+            return
+        }
+
+        // 내가 화면을 공유하고 있는 경우
+        if (
+            isScreenSharing &&
+            localScreenStream
+        ) {
+            await startWatchingMyScreen()
+            return
+        }
+
+        // 상대방 화면을 이미 받은 경우
+        if (remoteScreenStream) {
+            availableScreenStream =
+                remoteScreenStream
+
+            await startWatchingAvailableScreen()
+            return
+        }
+
+        // 상대방 공유 화면 연결 요청
+        watchScreenBtn.disabled = true
+        watchScreenBtn.textContent = "연결 중..."
+
+        socket.emit("join-screen-share")
+    }
+)
+
+
+// ========================================
+// 시청 나가기
+// 공유 자체를 종료하지 않고 영상만 닫음
+// ========================================
+leaveScreenViewBtn.addEventListener(
+    "click",
+    (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+
+        isWatchingScreen = false
+
+        screenShareVideo.pause()
+        screenShareVideo.srcObject = null
+
+        screenShareVideo.hidden = true
+        screenShareWaiting.hidden = false
+        leaveScreenViewBtn.hidden = true
+
+        watchScreenBtn.disabled = false
+
+        if (
+            isScreenSharing &&
+            localScreenStream
+        ) {
+            availableScreenStream =
+                localScreenStream
+
+            watchScreenBtn.textContent =
+                "내 화면 공유 시청하기"
+        } else {
+            availableScreenStream =
+                remoteScreenStream
+
+            watchScreenBtn.textContent =
+                "상대방 화면 공유 시청하기"
+        }
+    }
+)
+
+// ========================================
+// 공유자가 시청 요청을 받음
+// ========================================
+socket.on("screen-viewer-joined", async () => {
+    console.log("상대방이 화면 공유 시청을 요청함")
+
+    if (!localScreenStream) {
+        console.warn("공유 중인 화면이 없습니다.")
+        return
+    }
+
+    try {
+        createScreenPeerConnection()
+
+        localScreenStream
+            .getTracks()
+            .forEach((track) => {
+                screenPeerConnection.addTrack(
+                    track,
+                    localScreenStream
+                )
+            })
+
+        const offer =
+            await screenPeerConnection.createOffer()
+
+        await screenPeerConnection
+            .setLocalDescription(offer)
+
+        socket.emit(
+            "screen-offer",
+            screenPeerConnection.localDescription
+        )
+
+        console.log("화면 공유 offer 전송 완료")
+    } catch (error) {
+        console.error(
+            "화면 공유 offer 생성 실패:",
+            error
+        )
+    }
+})
+
+
+// ========================================
+// 시청자가 화면 공유 offer를 받음
+// ========================================
+socket.on("screen-offer", async (offer) => {
+    console.log("화면 공유 offer 받음")
+
+    try {
+        createScreenPeerConnection()
+
+        await screenPeerConnection
+            .setRemoteDescription(offer)
+
+        await addPendingScreenCandidates()
+
+        const answer =
+            await screenPeerConnection.createAnswer()
+
+        await screenPeerConnection
+            .setLocalDescription(answer)
+
+        socket.emit(
+            "screen-answer",
+            screenPeerConnection.localDescription
+        )
+
+        console.log("화면 공유 answer 전송 완료")
+    } catch (error) {
+        console.error(
+            "화면 공유 offer 처리 실패:",
+            error
+        )
+    }
+})
+
+
+// ========================================
+// 공유자가 answer를 받음
+// ========================================
+socket.on("screen-answer", async (answer) => {
+    console.log("화면 공유 answer 받음")
+
+    if (!screenPeerConnection) {
+        return
+    }
+
+    try {
+        await screenPeerConnection
+            .setRemoteDescription(answer)
+
+        await addPendingScreenCandidates()
+    } catch (error) {
+        console.error(
+            "화면 공유 answer 처리 실패:",
+            error
+        )
+    }
+})
+
+
+// ========================================
+// 화면 공유 ICE Candidate 받기
+// ========================================
+socket.on(
+    "screen-ice-candidate",
+    async (candidate) => {
+        try {
+            if (
+                !screenPeerConnection ||
+                !screenPeerConnection.remoteDescription
+            ) {
+                pendingScreenCandidates.push(candidate)
+                return
+            }
+
+            await screenPeerConnection
+                .addIceCandidate(candidate)
+        } catch (error) {
+            console.error(
+                "화면 공유 ICE 처리 실패:",
+                error
+            )
+        }
+    }
+)
+
+
+// ========================================
+// 내가 화면 공유 시작
+// ========================================
 async function startScreenShare() {
-    if (!peerConnection) {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+        alert(
+            "현재 브라우저에서는 화면 공유를 지원하지 않습니다."
+        )
+        return
+    }
+
+    if (!isInRoom || !roomId) {
         alert("먼저 방에 입장하세요.")
         return
     }
@@ -1171,7 +1696,7 @@ async function startScreenShare() {
     }
 
     try {
-        const screenStream =
+        localScreenStream =
             await navigator.mediaDevices.getDisplayMedia({
                 video: {
                     frameRate: {
@@ -1179,82 +1704,40 @@ async function startScreenShare() {
                         max: 30,
                     },
                 },
-
                 audio: false,
-
-                // 지원하는 브라우저에서는 전체 모니터 선택 항목 제외
-                monitorTypeSurfaces: "exclude",
-
-                // 현재 화상채팅 탭을 공유 대상으로 표시하지 않음
-                selfBrowserSurface: "exclude",
             })
 
-        const newScreenTrack =
-            screenStream.getVideoTracks()[0]
+        screenVideoTrack =
+            localScreenStream.getVideoTracks()[0]
 
-        if (!newScreenTrack) {
-            throw new Error("화면 공유 트랙이 없습니다.")
-        }
-
-        // 실제로 사용자가 무엇을 선택했는지 확인
-        const settings = newScreenTrack.getSettings()
-        const displaySurface = settings.displaySurface
-
-        console.log("화면 공유 종류:", displaySurface)
-
-        /*
-         * monitor = 전체 화면
-         * window  = 특정 프로그램 창
-         * browser = 특정 브라우저 탭
-         */
-        if (displaySurface === "monitor") {
-            screenStream
-                .getTracks()
-                .forEach((track) => track.stop())
-
-            alert(
-                "전체 화면을 공유하면 같은 모니터에서 " +
-                "재귀 현상이 발생합니다.\n\n" +
-                "특정 창 또는 브라우저 탭을 선택해 주세요."
+        if (!screenVideoTrack) {
+            throw new Error(
+                "화면 공유 영상 트랙이 없습니다."
             )
-
-            return
         }
-
-        const videoSender = peerConnection
-            .getSenders()
-            .find((sender) => {
-                return sender.track?.kind === "video"
-            })
-
-        if (!videoSender) {
-            screenStream
-                .getTracks()
-                .forEach((track) => track.stop())
-
-            throw new Error("영상 전송 정보를 찾지 못했습니다.")
-        }
-
-        screenVideoTrack = newScreenTrack
-
-        // 상대방에게 전송하는 영상만 화면 공유로 교체
-        await videoSender.replaceTrack(screenVideoTrack)
 
         isScreenSharing = true
 
-        shareScreenBtn.textContent = "화면 공유 중지"
-        shareScreenBtn.classList.add("is-sharing")
+        // 내 컴퓨터에도 시청하기 카드 표시
+        showScreenShareAvailable(localScreenStream)
+
+        watchScreenBtn.textContent =
+            "내 화면 공유 시청하기"
+
+        shareScreenBtn.textContent =
+            "화면 공유 중지"
+
+        shareScreenBtn.classList.add(
+            "is-sharing"
+        )
 
         statusText.textContent =
             "화면을 공유하고 있습니다."
 
-        /*
-         * 절대 localVideo에 screenStream을 넣지 않음
-         * localVideo는 기존 카메라 화면을 계속 표시
-         */
-        localVideo.srcObject = localStream
+        // 상대방에게 공유 시작 알림
+        socket.emit("screen-share-started")
 
-        // 브라우저 공유 중지 버튼을 눌렀을 때
+        // 브라우저의 공유 중지 버튼을 눌렀을 때
         screenVideoTrack.addEventListener(
             "ended",
             async () => {
@@ -1262,9 +1745,7 @@ async function startScreenShare() {
                     await stopScreenShare()
                 }
             },
-            {
-                once: true,
-            }
+            { once: true }
         )
     } catch (error) {
         console.error(
@@ -1272,11 +1753,16 @@ async function startScreenShare() {
             error
         )
 
-        // 화면 선택창에서 취소한 경우
+        localScreenStream = null
+        screenVideoTrack = null
+        isScreenSharing = false
+
         if (
             error.name === "NotAllowedError" ||
-            errstopor.name === "AbortError"
+            error.name === "AbortError"
         ) {
+            statusText.textContent =
+                "화면 공유가 취소되었습니다."
             return
         }
 
@@ -1286,63 +1772,68 @@ async function startScreenShare() {
     }
 }
 
+
+// ========================================
+// 내가 화면 공유 종료
+// ========================================
 async function stopScreenShare() {
-    if (!isScreenSharing && !screenVideoTrack) {
+    if (!isScreenSharing && !localScreenStream) {
         return
     }
 
-    const oldScreenTrack = screenVideoTrack
+    const oldScreenStream = localScreenStream
 
+    // stop()이 ended 이벤트를 다시 발생시키므로 먼저 상태 초기화
     isScreenSharing = false
+    localScreenStream = null
     screenVideoTrack = null
 
-    try {
-        const videoSender = peerConnection
-            ?.getSenders()
-            .find((sender) => {
-                return sender.track?.kind === "video"
+    if (oldScreenStream) {
+        oldScreenStream
+            .getTracks()
+            .forEach((track) => {
+                if (track.readyState === "live") {
+                    track.stop()
+                }
             })
-
-        // 다시 카메라 영상으로 교체
-        const restoreVideoTrack =
-            cameraVideoTrack?.readyState === "live"
-                ? cameraVideoTrack
-                : fallbackVideoTrack
-
-        if (
-            videoSender &&
-            restoreVideoTrack &&
-            restoreVideoTrack.readyState === "live"
-        ) {
-            await videoSender.replaceTrack(
-                restoreVideoTrack
-            )
-        }
-
-        if (
-            oldScreenTrack &&
-            oldScreenTrack.readyState === "live"
-        ) {
-            oldScreenTrack.stop()
-        }
-    } catch (error) {
-        console.error(
-            "화면 공유 종료 실패:",
-            error
-        )
     }
 
-    // 내 미리보기는 계속 카메라
-    if (localStream) {
-        localVideo.srcObject = localStream
-    }
+    closeScreenPeerConnection()
+    hideScreenShare()
 
     shareScreenBtn.textContent = "화면 공유"
     shareScreenBtn.classList.remove("is-sharing")
 
     statusText.textContent =
-        "카메라를 공유하고 있습니다."
+        "화면 공유를 종료했습니다."
+
+    // 상대방에게 종료 알림
+    socket.emit("screen-share-stopped")
 }
+
+
+// ========================================
+// 상대방이 화면 공유를 종료함
+// ========================================
+socket.on("screen-share-stopped", () => {
+    console.log("상대방 화면 공유 종료")
+
+    closeScreenPeerConnection()
+    hideScreenShare()
+
+    statusText.textContent =
+        "상대방이 화면 공유를 종료했습니다."
+})
+
+
+// 화면 공유 버튼은 이 이벤트 하나만 유지
+shareScreenBtn.addEventListener("click", async () => {
+    if (isScreenSharing) {
+        await stopScreenShare()
+    } else {
+        await startScreenShare()
+    }
+})
 
 updateMuteButton()
 updateRemoteMuteButton()
