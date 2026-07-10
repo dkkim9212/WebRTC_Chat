@@ -65,6 +65,17 @@ const controlCloseBtn = document.getElementById("controlCloseBtn")
 const controlToggleIcon = document.getElementById("controlToggleIcon")
 //화면 공유 버튼
 const shareScreenBtn = document.getElementById("shareScreenBtn")
+
+// 카메라 켜기/끄기 버튼
+const cameraToggleBtn =
+    document.getElementById("cameraToggleBtn")
+
+const cameraToggleIcon =
+    document.getElementById("cameraToggleIcon")
+
+// 전면/후면 카메라 전환 버튼
+const switchCameraBtn =
+    document.getElementById("switchCameraBtn")
 //화면 공유 파트
 const screenShareCard =
     document.getElementById("screenShareCard")
@@ -85,6 +96,13 @@ const leaveScreenViewBtn =
 let cameraVideoTrack = null
 
 let fallbackVideoTrack = null
+
+// user: 전면 카메라
+// environment: 후면 카메라
+let currentFacingMode = "user"
+
+// 카메라가 꺼져 있는지
+let isCameraOff = false
 
 // 현재 화면 공유 트랙
 let screenVideoTrack = null
@@ -224,6 +242,20 @@ joinBtn.addEventListener("click", async () => {
         stopLocalStream()
     }
 })
+// 카메라 옵션 함수
+function getCameraConstraints(facingMode = currentFacingMode) {
+    return {
+        width: {
+            ideal: 1280,
+        },
+        height: {
+            ideal: 720,
+        },
+        facingMode: {
+            ideal: facingMode,
+        },
+    }
+}
 // 가상 화면 장치 확인 함수
 function isProbablyScreenDevice(track) {
     const label = (track?.label || "").toLowerCase()
@@ -255,11 +287,9 @@ async function prepareLocalStream() {
     try {
         const cameraStream =
             await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: {
-                        ideal: "user",
-                    },
-                },
+                video: getCameraConstraints(
+                    currentFacingMode
+                ),
                 audio: false,
             })
 
@@ -282,6 +312,10 @@ async function prepareLocalStream() {
             !isProbablyScreenDevice(videoTrack)
         ) {
             cameraVideoTrack = videoTrack
+
+            // 기존 카메라 온·오프 상태 반영
+            cameraVideoTrack.enabled = !isCameraOff
+
             tracks.push(cameraVideoTrack)
         } else {
             console.warn(
@@ -351,6 +385,8 @@ async function prepareLocalStream() {
     }
 
     await loadMediaDevices()
+
+    updateCameraButtons()
 }
 
 // 카메라가 없을 때 사용할 검은 화면 video track 생성 함수
@@ -387,6 +423,382 @@ function createBlackVideoTrack() {
     // 만들어진 영상 스트림에서 video track 하나를 꺼내서 반환
     return stream.getVideoTracks()[0]
 }
+
+// ========================================
+// 카메라 버튼 상태 표시
+// ========================================
+function updateCameraButtons() {
+    const hasCamera =
+        cameraVideoTrack &&
+        cameraVideoTrack.readyState === "live"
+
+    cameraToggleBtn.disabled = !hasCamera
+    switchCameraBtn.disabled = !hasCamera
+
+    if (isCameraOff) {
+        cameraToggleIcon.textContent = "🚫"
+        cameraToggleBtn.title = "카메라 켜기"
+        cameraToggleBtn.classList.add("is-off")
+    } else {
+        cameraToggleIcon.textContent = "📷"
+        cameraToggleBtn.title = "카메라 끄기"
+        cameraToggleBtn.classList.remove("is-off")
+    }
+}
+
+
+// ========================================
+// 특정 방향의 카메라 트랙 가져오기
+// ========================================
+async function requestCameraTrack(facingMode) {
+    const commonConstraints = {
+        width: {
+            ideal: 1280,
+        },
+        height: {
+            ideal: 720,
+        },
+    }
+
+    let cameraStream
+
+    try {
+        /*
+         * 먼저 exact로 정확한 전면/후면 카메라 요청
+         */
+        cameraStream =
+            await navigator.mediaDevices.getUserMedia({
+                video: {
+                    ...commonConstraints,
+                    facingMode: {
+                        exact: facingMode,
+                    },
+                },
+                audio: false,
+            })
+    } catch (error) {
+        /*
+         * 권한 거부라면 다시 요청하지 않음
+         */
+        if (
+            error.name === "NotAllowedError" ||
+            error.name === "SecurityError"
+        ) {
+            throw error
+        }
+
+        /*
+         * exact를 지원하지 않거나 해당 방향 카메라를
+         * 정확히 찾지 못하면 ideal로 다시 요청
+         */
+        cameraStream =
+            await navigator.mediaDevices.getUserMedia({
+                video: {
+                    ...commonConstraints,
+                    facingMode: {
+                        ideal: facingMode,
+                    },
+                },
+                audio: false,
+            })
+    }
+
+    const track =
+        cameraStream.getVideoTracks()[0]
+
+    if (!track) {
+        cameraStream
+            .getTracks()
+            .forEach((streamTrack) => {
+                streamTrack.stop()
+            })
+
+        throw new Error(
+            "사용 가능한 카메라 트랙이 없습니다."
+        )
+    }
+
+    return track
+}
+
+
+// ========================================
+// 새로운 카메라 트랙을 통화에 적용
+// ========================================
+async function attachCameraTrack(
+    newCameraTrack,
+    videoSender
+) {
+    if (!localStream) {
+        newCameraTrack.stop()
+
+        throw new Error(
+            "로컬 미디어 스트림이 없습니다."
+        )
+    }
+
+    /*
+     * localStream에 남아 있는 기존 영상 트랙 제거
+     * 카메라 또는 No Camera 트랙이 대상
+     */
+    localStream
+        .getVideoTracks()
+        .forEach((track) => {
+            localStream.removeTrack(track)
+
+            if (track !== newCameraTrack) {
+                track.stop()
+            }
+        })
+
+    // 현재 카메라 꺼짐 상태 유지
+    newCameraTrack.enabled = !isCameraOff
+
+    cameraVideoTrack = newCameraTrack
+    fallbackVideoTrack = null
+
+    localStream.addTrack(newCameraTrack)
+
+    /*
+     * 상대방에게 전송하는 영상 트랙도 새 카메라로 교체
+     */
+    if (videoSender) {
+        await videoSender.replaceTrack(
+            newCameraTrack
+        )
+    } else if (peerConnection) {
+        peerConnection.addTrack(
+            newCameraTrack,
+            localStream
+        )
+    }
+
+    // 내 미리보기 갱신
+    localVideo.srcObject = localStream
+
+    try {
+        await localVideo.play()
+    } catch (error) {
+        console.warn(
+            "카메라 미리보기 재생 실패:",
+            error.message
+        )
+    }
+
+    updateCameraButtons()
+}
+
+
+// ========================================
+// 카메라를 못 열었을 때 No Camera 트랙 적용
+// ========================================
+async function attachFallbackVideoTrack(
+    videoSender
+) {
+    if (!localStream) {
+        return
+    }
+
+    localStream
+        .getVideoTracks()
+        .forEach((track) => {
+            localStream.removeTrack(track)
+            track.stop()
+        })
+
+    fallbackVideoTrack =
+        createBlackVideoTrack()
+
+    cameraVideoTrack = null
+
+    if (!fallbackVideoTrack) {
+        return
+    }
+
+    localStream.addTrack(
+        fallbackVideoTrack
+    )
+
+    if (videoSender) {
+        await videoSender.replaceTrack(
+            fallbackVideoTrack
+        )
+    }
+
+    localVideo.srcObject = localStream
+
+    try {
+        await localVideo.play()
+    } catch (error) {
+        console.warn(
+            "대체 화면 재생 실패:",
+            error.message
+        )
+    }
+
+    updateCameraButtons()
+}
+
+
+// ========================================
+// 카메라 켜기/끄기
+// ========================================
+function toggleCamera() {
+    if (
+        !cameraVideoTrack ||
+        cameraVideoTrack.readyState !== "live"
+    ) {
+        alert("사용 가능한 카메라가 없습니다.")
+        return
+    }
+
+    isCameraOff = !isCameraOff
+
+    /*
+     * false로 설정하면 연결은 유지하면서
+     * 상대방에게는 검은 영상 프레임이 전송됨
+     */
+    cameraVideoTrack.enabled =
+        !isCameraOff
+
+    updateCameraButtons()
+}
+
+
+// ========================================
+// 전면/후면 카메라 전환
+// ========================================
+async function switchCamera() {
+    if (
+        !localStream ||
+        !cameraVideoTrack
+    ) {
+        alert("사용 가능한 카메라가 없습니다.")
+        return
+    }
+
+    const previousFacingMode =
+        currentFacingMode
+
+    const nextFacingMode =
+        currentFacingMode === "user"
+            ? "environment"
+            : "user"
+
+    /*
+     * 기존 영상 sender를 카메라 종료 전에 저장
+     */
+    const videoSender =
+        peerConnection
+            ?.getSenders()
+            .find((sender) => {
+                return (
+                    sender.track &&
+                    sender.track.kind === "video"
+                )
+            })
+
+    const oldCameraTrack =
+        cameraVideoTrack
+
+    switchCameraBtn.disabled = true
+    switchCameraBtn.textContent = "⏳"
+
+    /*
+     * 모바일에서 카메라 전환이 막히지 않도록
+     * 기존 카메라를 먼저 정지
+     */
+    localStream.removeTrack(
+        oldCameraTrack
+    )
+
+    oldCameraTrack.stop()
+    cameraVideoTrack = null
+
+    try {
+        const newCameraTrack =
+            await requestCameraTrack(
+                nextFacingMode
+            )
+
+        currentFacingMode =
+            nextFacingMode
+
+        await attachCameraTrack(
+            newCameraTrack,
+            videoSender
+        )
+
+        console.log(
+            "카메라 전환 완료:",
+            currentFacingMode
+        )
+    } catch (error) {
+        console.error(
+            "카메라 전환 실패:",
+            error
+        )
+
+        /*
+         * 전환 실패 시 원래 카메라 복구 시도
+         */
+        try {
+            const restoredTrack =
+                await requestCameraTrack(
+                    previousFacingMode
+                )
+
+            currentFacingMode =
+                previousFacingMode
+
+            await attachCameraTrack(
+                restoredTrack,
+                videoSender
+            )
+        } catch (restoreError) {
+            console.error(
+                "기존 카메라 복구 실패:",
+                restoreError
+            )
+
+            await attachFallbackVideoTrack(
+                videoSender
+            )
+        }
+
+        alert(
+            "전면/후면 카메라 전환에 실패했습니다."
+        )
+    } finally {
+        switchCameraBtn.textContent = "🔄"
+
+        updateCameraButtons()
+    }
+}
+
+
+// 카메라 켜기/끄기 버튼
+cameraToggleBtn.addEventListener(
+    "click",
+    (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+
+        toggleCamera()
+    }
+)
+
+
+// 전면/후면 카메라 전환 버튼
+switchCameraBtn.addEventListener(
+    "click",
+    async (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+
+        await switchCamera()
+    }
+)
 
 // WebRTC 연결 객체를 만드는 함수
 function createPeerConnection() {
@@ -686,6 +1098,11 @@ function stopLocalStream() {
     // 9. 화면 공유 버튼 원상 복구
     shareScreenBtn.textContent = "화면 공유"
     shareScreenBtn.classList.remove("is-sharing")
+    // 카메라 상태 초기화
+    currentFacingMode = "user"
+    isCameraOff = false
+
+    updateCameraButtons()
 }
 
 // 내가 방에서 나가는 함수
@@ -1837,5 +2254,6 @@ shareScreenBtn.addEventListener("click", async () => {
 
 updateMuteButton()
 updateRemoteMuteButton()
+updateCameraButtons()
 
 remoteVideo.volume = Number(remoteVolume.value)

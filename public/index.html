@@ -121,12 +121,22 @@
           </div>
 
           <div class="audio-button-row">
-            <button id="remoteMuteBtn" class="audio-icon-btn" title="상대방 소리 끄기">
+            <button id="remoteMuteBtn" class="audio-icon-btn" type="button" title="상대방 소리 끄기">
               <span id="remoteMuteIcon">🔊</span>
             </button>
 
-            <button id="muteBtn" class="audio-icon-btn" title="마이크 끄기">
+            <button id="muteBtn" class="audio-icon-btn" type="button" title="마이크 끄기">
               <span id="muteIcon">🎙️</span>
+            </button>
+
+            <!-- 카메라 켜기/끄기 -->
+            <button id="cameraToggleBtn" class="audio-icon-btn" type="button" title="카메라 끄기">
+              <span id="cameraToggleIcon">📷</span>
+            </button>
+
+            <!-- 전면/후면 카메라 전환 -->
+            <button id="switchCameraBtn" class="audio-icon-btn" type="button" title="전면/후면 카메라 전환">
+              <span>🔄</span>
             </button>
           </div>
         </div>
@@ -135,7 +145,7 @@
   </main>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=41"></script>
+  <script src="app.js?v=51"></script>
 </body>
 
 </html>
